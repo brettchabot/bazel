@@ -62,6 +62,7 @@ import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner.ProgressStatus;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
 import com.google.devtools.build.lib.exec.util.FakeOwner;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.util.io.FileOutErr;
@@ -273,7 +274,7 @@ public class GrpcRemoteExecutionClientTest {
         new ByteStreamUploader(remoteOptions.remoteInstanceName, channel.retain(), creds,
             remoteOptions.remoteTimeout, retrier);
     GrpcRemoteCache remoteCache =
-        new GrpcRemoteCache(channel.retain(), creds, remoteOptions, retrier, DIGEST_UTIL, uploader);
+        new GrpcRemoteCache(channel.retain(), creds, uploader, remoteOptions, DIGEST_UTIL, retrier);
     client =
         new RemoteSpawnRunner(
             execRoot,

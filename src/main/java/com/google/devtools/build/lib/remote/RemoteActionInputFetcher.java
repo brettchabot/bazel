@@ -90,7 +90,7 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
             if (download == null) {
               Context prevCtx = ctx.attach();
               try {
-                System.err.println(String.format("Fetching %s, %d KiB", path.toString(), path.getFileSize()/1000));
+                System.err.println(String.format("Fetching %s, %d KiB", path.toString(), metadata.getSize()/1000));
                 download = remoteCache.downloadFile(
                     path, DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize()));
                 downloadsInProgress.put(path, download);

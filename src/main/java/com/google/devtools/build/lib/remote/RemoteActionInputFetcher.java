@@ -19,8 +19,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
-import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.CommandLines.ParamFileActionInput;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
@@ -29,7 +27,6 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
 import io.grpc.Context;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -37,13 +34,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import net.jcip.annotations.GuardedBy;
 
 /**
  * Stages output files that are stored remotely to the local filesystem.
  *
- * <p>This is necessary for remote caching/execution when --experimental_remote_fetch_outputs=none
+ * <p>This is necessary for remote caching/execution when --experimental_remote_fetch_outputs=minimal
  * is specified.
  */
 public class RemoteActionInputFetcher implements ActionInputPrefetcher {
@@ -51,7 +47,7 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
   private final Object lock = new Object();
 
   @GuardedBy("lock")
-  private final Map<Path, ListenableFuture<Path>> downloadsInProgress = new HashMap<>();
+  private final Map<Path, ListenableFuture<Void>> downloadsInProgress = new HashMap<>();
 
   private final AbstractRemoteActionCache remoteCache;
   private final Path execRoot;
@@ -69,8 +65,7 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
       Iterable<? extends ActionInput> inputs, MetadataProvider metadataProvider)
       throws IOException, InterruptedException {
     try (SilentCloseable c = Profiler.instance().profile("Remote.prefetchInputs")) {
-      List<ListenableFuture<Path>> downloads = new ArrayList<>();
-      List<Path> downloadsPaths = new ArrayList<>();
+      Map<Path, ListenableFuture<Void>> downloadsToWaitFor = new HashMap<>();
       for (ActionInput input : inputs) {
         if (input instanceof VirtualActionInput) {
           VirtualActionInput paramFileActionInput = (VirtualActionInput) input;
@@ -91,23 +86,19 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
               continue;
             }
 
-            ListenableFuture<Path> download = downloadsInProgress.get(path);
+            ListenableFuture<Void> download = downloadsInProgress.get(path);
             if (download == null) {
               Context prevCtx = ctx.attach();
               try {
-                download =
-                    Futures.transform(
-                        remoteCache.downloadFile(
-                            path, DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize())),
-                        (none) -> path,
-                        MoreExecutors.directExecutor());
+                System.err.println(String.format("Fetching %s, %d KiB", path.toString(), path.getFileSize()/1000));
+                download = remoteCache.downloadFile(
+                    path, DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize()));
                 downloadsInProgress.put(path, download);
               } finally {
                 ctx.detach(prevCtx);
               }
             }
-            downloads.add(download);
-            downloadsPaths.add(path);
+            downloadsToWaitFor.putIfAbsent(path, download);
           }
         }
       }
@@ -115,11 +106,10 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
       IOException ioException = null;
       InterruptedException interruptedException = null;
       try {
-        for (int i = 0; i < downloads.size(); i++) {
+        for (Map.Entry<Path, ListenableFuture<Void>> entry : downloadsToWaitFor.entrySet()) {
           try {
-            Path path = Utils.getFromFuture(downloads.get(i));
-            path.setExecutable(true);
-            System.err.println(String.format("Fetched %s, %d KiB", path.toString(), path.getFileSize()/1000));
+            Utils.getFromFuture(entry.getValue());
+            entry.getKey().setExecutable(true);
           } catch (IOException e) {
             ioException = ioException == null ? e : ioException;
           } catch (InterruptedException e) {
@@ -128,7 +118,7 @@ public class RemoteActionInputFetcher implements ActionInputPrefetcher {
         }
       } finally {
         synchronized (lock) {
-          for (Path path : downloadsPaths) {
+          for (Path path : downloadsToWaitFor.keySet()) {
             downloadsInProgress.remove(path);
           }
         }
